@@ -1,2 +1,6 @@
 ESD/
 __pycache__/
+venv/
+*.pyc
+Models/
+Vocoder/
