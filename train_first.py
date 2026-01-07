@@ -75,16 +75,19 @@ def main(config_path):
     # load data
     train_list, val_list = get_data_path_list(train_path, val_path)
 
+    use_emotions = Munch(config).get('use_emotions', False)
     train_dataloader = build_dataloader(train_list,
                                         batch_size=batch_size,
                                         num_workers=8,
                                         dataset_config={},
+                                        use_emotions=use_emotions,
                                         device=device)
 
     val_dataloader = build_dataloader(val_list,
                                       batch_size=batch_size,
                                       validation=True,
                                       num_workers=2,
+                                      use_emotions=use_emotions,
                                       device=device,
                                       dataset_config={})
     # load pretrained ASR model
@@ -140,7 +143,8 @@ def main(config_path):
         for i, batch in enumerate(train_dataloader):
 
             batch = [b.to(device) for b in batch]
-            texts, input_lengths, mels, mel_input_length = batch
+            texts, input_lengths, mels, mel_input_length, emo_ids = batch
+            emo_ids = emo_ids.to(device)
 
             mask = length_to_mask(mel_input_length // (2 ** model.text_aligner.n_down)).to('cuda')
             m = length_to_mask(input_lengths)
@@ -199,9 +203,13 @@ def main(config_path):
             if gt.shape[-1] < 80:
                 continue
 
+            if emo_ids is not None:
+                e = model.emotion_encoder(emo_ids)
+            else:
+                e = None
             real_norm = log_norm(gt.unsqueeze(1)).squeeze(1).detach()
             F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
-            s = model.style_encoder(gt.unsqueeze(1))
+            s = model.style_encoder(gt.unsqueeze(1), e=e)
 
             # reconstruction
             mel_rec = model.decoder(en, F0_real, real_norm, s)
@@ -291,7 +299,8 @@ def main(config_path):
                 optimizer.zero_grad()
 
                 batch = [b.to(device) for b in batch]
-                texts, input_lengths, mels, mel_input_length = batch
+                texts, input_lengths, mels, mel_input_length, emo_ids = batch
+                emo_ids = emo_ids.to(device)
 
                 with torch.no_grad():
                     mask = length_to_mask(mel_input_length // (2 ** model.text_aligner.n_down)).to('cuda')
@@ -344,7 +353,11 @@ def main(config_path):
                     F0 = F0.reshape(F0.shape[0], F0.shape[1] * 2, F0.shape[2], 1).squeeze()
 
                 # reconstruct
-                s = model.style_encoder(gt.unsqueeze(1))
+                if emo_ids is not None:
+                    e = model.emotion_encoder(emo_ids)
+                else:
+                    e = None
+                s = model.style_encoder(gt.unsqueeze(1), e=e)
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
                 mel_rec = model.decoder(en, F0_real, real_norm, s)
                 mel_rec = mel_rec[..., :gt.shape[-1]]

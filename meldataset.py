@@ -73,13 +73,21 @@ class FilePathDataset(torch.utils.data.Dataset):
                  sr=24000,
                  data_augmentation=False,
                  validation=False,
+                 use_emotions=False
                  ):
 
         spect_params = SPECT_PARAMS
         mel_params = MEL_PARAMS
 
         _data_list = [l[:-1].split('|') for l in data_list]
-        self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
+        self.data_list = []
+        for data in _data_list:
+            if len(data) == 4:
+                self.data_list.append(tuple(data))
+            elif len(data) == 3:
+                self.data_list.append((data[0], data[1], data[2], '0'))
+            else:
+                raise ValueError(f"Invalid line in data list: {data}")
         self.text_cleaner = TextCleaner()
         self.sr = sr
 
@@ -98,7 +106,7 @@ class FilePathDataset(torch.utils.data.Dataset):
         data = self.data_list[idx]
         path = data[0]
         
-        wave, text_tensor, speaker_id = self._load_tensor(data)
+        wave, text_tensor, speaker_id, emotion_id = self._load_tensor(data)
         
         mel_tensor = preprocess(wave).squeeze()
         
@@ -106,11 +114,12 @@ class FilePathDataset(torch.utils.data.Dataset):
         length_feature = acoustic_feature.size(1)
         acoustic_feature = acoustic_feature[:, :(length_feature - length_feature % 2)]
         
-        return speaker_id, acoustic_feature, text_tensor, path
+        return speaker_id, emotion_id, acoustic_feature, text_tensor, path
 
     def _load_tensor(self, data):
-        wave_path, text, speaker_id = data
+        wave_path, text, speaker_id, emotion_id = data
         speaker_id = int(speaker_id)
+        emotion_id = int(emotion_id)
         wave, sr = sf.read(wave_path)
         if wave.shape[-1] == 2:
             wave = wave[:, 0].squeeze()
@@ -127,7 +136,7 @@ class FilePathDataset(torch.utils.data.Dataset):
         
         text = torch.LongTensor(text)
 
-        return wave, text, speaker_id
+        return wave, text, speaker_id, emotion_id
 
     def _load_data(self, data):
         wave, text_tensor, speaker_id = self._load_tensor(data)
@@ -158,22 +167,44 @@ class Collater(object):
         # batch[0] = wave, mel, text, f0, speakerid
         batch_size = len(batch)
 
-        # sort by mel length
-        lengths = [b[1].shape[1] for b in batch]
+        # sort by mel length — support both formats:
+        # with emotion: (label, emo, mel, text, path)
+        # without emotion: (label, mel, text, path)
+        def _get_mel(item):
+            return item[2] if len(item) == 5 else item[1]
+
+        lengths = [_get_mel(b).shape[1] for b in batch]
         batch_indexes = np.argsort(lengths)[::-1]
         batch = [batch[bid] for bid in batch_indexes]
 
-        nmels = batch[0][1].size(0)
-        max_mel_length = max([b[1].shape[1] for b in batch])
-        max_text_length = max([b[2].shape[0] for b in batch])
+        first = batch[0]
+        nmels = _get_mel(first).size(0)
+        max_mel_length = max([_get_mel(b).shape[1] for b in batch])
+        # text is after mel in both formats
+        max_text_length = max([(_get_mel(b) is not None and (b[3].shape[0] if len(b) == 5 else b[2].shape[0])) for b in batch])
+        # compute properly
+        if len(batch[0]) == 5:
+            max_text_length = max([b[3].shape[0] for b in batch])
+        else:
+            max_text_length = max([b[2].shape[0] for b in batch])
 
         mels = torch.zeros((batch_size, nmels, max_mel_length)).float()
         texts = torch.zeros((batch_size, max_text_length)).long()
         input_lengths = torch.zeros(batch_size).long()
         output_lengths = torch.zeros(batch_size).long()
+        emo_ids = torch.zeros(batch_size).long()
         paths = ['' for _ in range(batch_size)]
         
-        for bid, (label, mel, text, path) in enumerate(batch):
+        for bid, item in enumerate(batch):
+            if len(item) == 5:
+                label, emo, mel, text, path = item
+                emotion_id = int(emo)
+                mel = mel
+                text = text
+            else:
+                label, mel, text, path = item
+                emotion_id = 0
+
             mel_size = mel.size(1)
             text_size = text.size(0)
             mels[bid, :, :mel_size] = mel
@@ -181,23 +212,24 @@ class Collater(object):
             input_lengths[bid] = text_size
             output_lengths[bid] = mel_size
             paths[bid] = path
-            
+            emo_ids[bid] = emotion_id
+
         if self.return_wave:
-            return paths, texts, input_lengths, mels, output_lengths
-            
-        return texts, input_lengths, mels, output_lengths
+            return paths, texts, input_lengths, mels, output_lengths, emo_ids
+
+        return texts, input_lengths, mels, output_lengths, emo_ids
 
 
 
 def build_dataloader(path_list,
                      validation=False,
+                     use_emotions=False,
                      batch_size=4,
                      num_workers=1,
                      device='cpu',
                      collate_config={},
                      dataset_config={}):
-    
-    dataset = FilePathDataset(path_list, validation=validation, **dataset_config)
+    dataset = FilePathDataset(path_list, validation=validation, use_emotions=use_emotions, **dataset_config)
     collate_fn = Collater(**collate_config)
     data_loader = DataLoader(dataset,
                              batch_size=batch_size,

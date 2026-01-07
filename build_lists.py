@@ -5,8 +5,8 @@ import random
 ESD_ROOT = Path("./ESD")
 SPEAKER = "0011"
 TRANSCRIPT_PATH = ESD_ROOT / SPEAKER / (SPEAKER + ".txt")
-OUT_TRAIN = "Data/ESD/train_list_esd_0011.txt"
-OUT_VAL = "Data/ESD/val_list_esd_0011.txt"
+OUT_TRAIN = "Data/ESD/train_list_esd_emotions_0011.txt"
+OUT_VAL = "Data/ESD/val_list_esd_emotions_0011.txt"
 
 wav_paths = sorted((ESD_ROOT / SPEAKER).glob("**/*.wav"))
 print(f"Found {len(wav_paths)} wav files")
@@ -23,6 +23,16 @@ def load_metadata():
             if len(parts) != 3:
                 continue
             utt_id, transcript, emotion = parts
+            if emotion.lower() == "neutral":
+                emotion = "0"
+            elif emotion.lower() == "happy":
+                emotion = "1"
+            elif emotion.lower() == "sad":
+                emotion = "2"
+            elif emotion.lower() == "angry":
+                emotion = "3"
+            elif emotion.lower() == "surprise":
+                emotion = "4"
             meta[utt_id] = (transcript, emotion)
     print(f"Loaded metadata for {len(meta)} recordings")
     return meta
@@ -30,17 +40,30 @@ def load_metadata():
 
 metadata = load_metadata()
 
-entries = []
-for wav in wav_paths:
-    utt_id = wav.stem
-    if utt_id not in metadata:
-        print(f"Warning: no metadata for {utt_id}")
-        continue
+def build_lists(emotions = False):
+    entries = []
 
-    transcript, emotion = metadata[utt_id]
-    transcript = transcript.replace("|", " ")
-    entries.append(f"{wav}|{transcript}|0\n")
+    if emotions:
+        for wav in wav_paths:
+            utt_id = wav.stem
+            if utt_id not in metadata:
+                print(f"Warning: no metadata for {utt_id}")
+                continue
+            transcript, emotion = metadata[utt_id]
+            transcript = transcript.replace("|", " ")
+            entries.append(f"{wav}|{transcript}|0|{emotion}\n")
+    else:
+        for wav in wav_paths:
+            utt_id = wav.stem
+            if utt_id not in metadata:
+                print(f"Warning: no metadata for {utt_id}")
+                continue
+            transcript, emotion = metadata[utt_id]
+            transcript = transcript.replace("|", " ")
+            entries.append(f"{wav}|{transcript}|0\n")
+    return entries
 
+entries = build_lists(emotions=True)
 random.shuffle(entries)
 split = int(0.9 * len(entries))
 train_entries = entries[:split]

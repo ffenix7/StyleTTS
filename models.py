@@ -150,11 +150,12 @@ class StyleEncoder(nn.Module):
 
         self.unshared = nn.Linear(dim_out, style_dim)
 
-    def forward(self, x):
+    def forward(self, x, e=None):
         h = self.shared(x)
         h = h.view(h.size(0), -1)
         s = self.unshared(h)
-    
+        if e is not None:
+            s = s + e
         return s
 
 class LinearNorm(torch.nn.Module):
@@ -487,18 +488,6 @@ class AdaLayerNorm(nn.Module):
         x = F.layer_norm(x, (self.channels,), eps=self.eps)
         x = (1 + gamma) * x + beta
         return x.transpose(1, -1).transpose(-1, -2)
-    
-class LinearNorm(torch.nn.Module):
-    def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
-        super(LinearNorm, self).__init__()
-        self.linear_layer = torch.nn.Linear(in_dim, out_dim, bias=bias)
-
-        torch.nn.init.xavier_uniform_(
-            self.linear_layer.weight,
-            gain=torch.nn.init.calculate_gain(w_init_gain))
-
-    def forward(self, x):
-        return self.linear_layer(x)
 
 class ProsodyPredictor(nn.Module):
 
@@ -644,6 +633,17 @@ class DurationEncoder(nn.Module):
         mask = torch.gt(mask+1, lengths.unsqueeze(1))
         return mask
     
+class EmotionEmbedding(nn.Module):
+    def __init__(self, n_emotions, emo_dim, style_dim):
+        super().__init__()
+        self.embed = nn.Embedding(n_emotions, emo_dim)
+        self.proj = nn.Linear(emo_dim, style_dim)
+
+    def forward(self, emo_ids):
+        emo_ids = emo_ids.view(-1).long()
+        e = self.embed(emo_ids)
+        return self.proj(e)
+        
 def load_F0_models(path):
     # load F0 model
 
@@ -678,6 +678,10 @@ def build_model(args, text_aligner, pitch_extractor):
 
     decoder = Decoder(dim_in=args.hidden_dim, style_dim=args.style_dim, dim_out=args.n_mels)
     text_encoder = TextEncoder(channels=args.hidden_dim, kernel_size=5, depth=args.n_layer, n_symbols=args.n_token)
+    if args.use_emotions:
+        emotion_encoder = EmotionEmbedding(n_emotions=args.n_emotions, emo_dim=args.emo_dim, style_dim=args.style_dim)
+    else:
+        emotion_encoder = None
     predictor = ProsodyPredictor(style_dim=args.style_dim, d_hid=args.hidden_dim, nlayers=args.n_layer, dropout=args.dropout)
     style_encoder = StyleEncoder(dim_in=args.dim_in, style_dim=args.style_dim, max_conv_dim=args.hidden_dim)
     discriminator = Discriminator2d(dim_in=args.dim_in, num_domains=1, max_conv_dim=args.hidden_dim)
@@ -686,6 +690,7 @@ def build_model(args, text_aligner, pitch_extractor):
         decoder=decoder,
                  pitch_extractor=pitch_extractor,
                      text_encoder=text_encoder,
+                     emotion_encoder=emotion_encoder,
                      style_encoder=style_encoder,
                  text_aligner = text_aligner,
                 discriminator=discriminator)
